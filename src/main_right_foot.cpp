@@ -25,9 +25,9 @@ BLEServer* pServer = nullptr;
 BLECharacteristic* pCharacteristic = nullptr;
 BLECharacteristic* pWriteCharacteristic = nullptr;
 
-#define SERVICE_UUID "12345678-1234-5678-1234-56789abcdef0"
-#define CHARACTERISTIC_UUID "abcdef01-1234-5678-1234-56789abcdef0"
-#define WRITE_CHARACTERISTIC_UUID "abcdef02-1234-5678-1234-56789abcdef0"
+#define SERVICE_UUID                "87654321-4321-6789-4321-0fedcba98765"
+#define CHARACTERISTIC_UUID         "fedcba01-4321-6789-4321-0fedcba98765"
+#define WRITE_CHARACTERISTIC_UUID   "fedcba02-4321-6789-4321-0fedcba98765"
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
@@ -101,7 +101,7 @@ void setup() {
     } else {
         Serial.println("✅ MPU6050 초기화 완료!");
     }
-    BLEDevice::init("ESP32-S3 BLE Shoe");
+    BLEDevice::init("ESP32-S3 BLE right shoe");
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
@@ -170,10 +170,10 @@ void loop() {
         calculateAngles(pitch, roll);
 
         StaticJsonDocument<600> doc;
-        JsonArray fsrArray = doc.createNestedArray("fsr_left");  // 원본 값
-        JsonArray normArray = doc.createNestedArray("normalized_left");  // 가우시안 정규화 (0~1)
-        JsonArray finalArray = doc.createNestedArray("final_normalized_left");  // 총합 1로 다시 정규화된 값
-        JsonArray postureArray = doc.createNestedArray("posture_left");
+        JsonArray fsrArray = doc.createNestedArray("fsr_right");  // 원본 값
+        JsonArray normArray = doc.createNestedArray("normalized_right");  // 가우시안 정규화 (0~1)
+        JsonArray finalArray = doc.createNestedArray("final_normalized_right");  // 총합 1로 다시 정규화된 값
+        JsonArray postureArray = doc.createNestedArray("posture_right");
 
         for (int i = 0; i < NUM_FSR; i++) {
             fsrArray.add(fsrValues[i]);
