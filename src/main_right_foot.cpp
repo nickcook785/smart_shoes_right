@@ -25,9 +25,12 @@ BLEServer* pServer = nullptr;
 BLECharacteristic* pCharacteristic = nullptr;
 BLECharacteristic* pWriteCharacteristic = nullptr;
 
-#define SERVICE_UUID                "87654321-4321-6789-4321-0fedcba98765"
-#define CHARACTERISTIC_UUID         "fedcba01-4321-6789-4321-0fedcba98765"
-#define WRITE_CHARACTERISTIC_UUID   "fedcba02-4321-6789-4321-0fedcba98765"
+#define SERVICE_UUID "87654321-4321-6789-4321-0fedcba98765"
+#define CHARACTERISTIC_UUID "fedcba01-4321-6789-4321-0fedcba98765"
+#define WRITE_CHARACTERISTIC_UUID "fedcba02-4321-6789-4321-0fedcba98765"
+
+float yawAngle = 0.0;
+unsigned long prevTime = 0;
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
@@ -55,7 +58,7 @@ void setupFSRPins() {
     Serial.println("✅ FSR 센서 핀 설정 완료!");
 }
 
-void calculateAngles(float &pitch, float &roll) {
+void calculateAngles(float &pitch, float &roll, float &yawRate) {
     sensors_event_t a, g, temp;
     if (mpu.getEvent(&a, &g, &temp)) {
         float ax = a.acceleration.x;
@@ -64,13 +67,15 @@ void calculateAngles(float &pitch, float &roll) {
 
         pitch = atan2(ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
         roll = atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
+        yawRate = g.gyro.z * 180.0 / PI;  // rad/s → deg/s
     } else {
         Serial.println("⚠️ MPU6050 데이터 읽기 실패 (센서 미연결일 수 있음)");
         pitch = 0.0;
         roll = 0.0;
+        yawRate = 0.0;
     }
-
 }
+
 String evaluateSquat(float* norm) {
     float front = (norm[0] + norm[1] + norm[2]) / 3.0;
     float center = norm[3];
@@ -85,9 +90,7 @@ String evaluateSquat(float* norm) {
     } else {
         return "UNCLEAR";
     }
- 
 }
-
 
 void setup() {
     Serial.begin(115200);
@@ -126,15 +129,16 @@ void setup() {
 
     BLEDevice::startAdvertising();
     Serial.println("📡 BLE 서버 광고 시작");
+
+    prevTime = millis();
 }
 
 void loop() {
     if (deviceConnected) {
         int fsrValues[NUM_FSR];
-        float normalizedValues[NUM_FSR];  // 가우시안 정규화 값
-        float finalNormalized[NUM_FSR];   // 총합 1로 다시 정규화된 값
+        float normalizedValues[NUM_FSR];
+        float finalNormalized[NUM_FSR];
         const char* postureResults[NUM_FSR];
-        String squatPosture = evaluateSquat(finalNormalized);
 
         fsrValues[0] = analogRead(FSR1_PIN);
         fsrValues[1] = analogRead(FSR2_PIN);
@@ -142,8 +146,8 @@ void loop() {
         fsrValues[3] = analogRead(FSR4_PIN);
         fsrValues[4] = analogRead(FSR5_PIN);
 
-        float mu = 2000.0;   // 중심점
-        float sigma = 500.0; // 퍼짐 정도
+        float mu = 2000.0;
+        float sigma = 500.0;
 
         float sumNormalized = 0.0;
         for (int i = 0; i < NUM_FSR; i++) {
@@ -155,45 +159,47 @@ void loop() {
             else postureResults[i] = "INACTIVE";
         }
 
-        // 총합이 0일 경우 나눗셈 방지 → 전체를 0으로 설정
-        if (sumNormalized > 0.0) {
-            for (int i = 0; i < NUM_FSR; i++) {
-                finalNormalized[i] = normalizedValues[i] / sumNormalized;
-            }
-        } else {
-            for (int i = 0; i < NUM_FSR; i++) {
-                finalNormalized[i] = 0.0;
-            }
+        for (int i = 0; i < NUM_FSR; i++) {
+            finalNormalized[i] = (sumNormalized > 0.0) ? normalizedValues[i] / sumNormalized : 0.0;
         }
 
-        float pitch, roll;
-        calculateAngles(pitch, roll);
+        float pitch, roll, yawRate;
+        calculateAngles(pitch, roll, yawRate);
 
-        StaticJsonDocument<600> doc;
-        JsonArray fsrArray = doc.createNestedArray("fsr_right");  // 원본 값
-        JsonArray normArray = doc.createNestedArray("normalized_right");  // 가우시안 정규화 (0~1)
-        JsonArray finalArray = doc.createNestedArray("final_normalized_right");  // 총합 1로 다시 정규화된 값
+        unsigned long now = millis();
+        float dt = (now - prevTime) / 1000.0;
+        yawAngle += yawRate * dt;
+        prevTime = now;
+
+        String squatPosture = evaluateSquat(finalNormalized);
+
+        StaticJsonDocument<700> doc;
+        JsonArray fsrArray = doc.createNestedArray("fsr_right");
+        JsonArray normArray = doc.createNestedArray("normalized_right");
+        JsonArray finalArray = doc.createNestedArray("final_normalized_right");
         JsonArray postureArray = doc.createNestedArray("posture_right");
 
         for (int i = 0; i < NUM_FSR; i++) {
             fsrArray.add(fsrValues[i]);
-            normArray.add(normalizedValues[i]);         // 원래 가우시안 정규화
-            finalArray.add(finalNormalized[i]);         // 총합 1 정규화
+            normArray.add(normalizedValues[i]);
+            finalArray.add(finalNormalized[i]);
             postureArray.add(postureResults[i]);
         }
 
         doc["pitch"] = pitch;
         doc["roll"] = roll;
-        doc["squat_posture"] = squatPosture; 
+        doc["yaw_rate"] = yawRate;
+        doc["yaw_angle"] = yawAngle;
+        doc["squat_posture"] = squatPosture;
 
         String jsonString;
         serializeJson(doc, jsonString);
 
-        Serial.println(jsonString);  // 확인용 출력
+        Serial.println(jsonString);
         pCharacteristic->setValue(jsonString.c_str());
         pCharacteristic->notify();
 
-        delay(1000);  // 주기
+        delay(1000);
     } else {
         delay(500);
     }
