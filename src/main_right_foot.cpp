@@ -25,9 +25,9 @@ BLEServer* pServer = nullptr;
 BLECharacteristic* pCharacteristic = nullptr;
 BLECharacteristic* pWriteCharacteristic = nullptr;
 
-#define SERVICE_UUID "87654321-4321-6789-4321-0fedcba98765"
-#define CHARACTERISTIC_UUID "fedcba01-4321-6789-4321-0fedcba98765"
-#define WRITE_CHARACTERISTIC_UUID "fedcba02-4321-6789-4321-0fedcba98765"
+#define SERVICE_UUID                "87654321-4321-6789-4321-0fedcba98765"
+#define CHARACTERISTIC_UUID         "fedcba01-4321-6789-4321-0fedcba98765"
+#define WRITE_CHARACTERISTIC_UUID   "fedcba02-4321-6789-4321-0fedcba98765"
 
 float yawAngle = 0.0;
 unsigned long prevTime = 0;
@@ -58,23 +58,16 @@ void setupFSRPins() {
     Serial.println("✅ FSR 센서 핀 설정 완료!");
 }
 
-void calculateAngles(float &pitch, float &roll, float &yawRate) {
+void calculateYawRate(float &yawRate) {
     sensors_event_t a, g, temp;
     if (mpu.getEvent(&a, &g, &temp)) {
-        float ax = a.acceleration.x;
-        float ay = a.acceleration.y;
-        float az = a.acceleration.z;
-
-        pitch = atan2(ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
-        roll = atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
         yawRate = g.gyro.z * 180.0 / PI;  // rad/s → deg/s
     } else {
         Serial.println("⚠️ MPU6050 데이터 읽기 실패 (센서 미연결일 수 있음)");
-        pitch = 0.0;
-        roll = 0.0;
         yawRate = 0.0;
     }
 }
+
 
 String evaluateSquat(float* norm) {
     float front = (norm[0] + norm[1] + norm[2]) / 3.0;
@@ -146,8 +139,8 @@ void loop() {
         fsrValues[3] = analogRead(FSR4_PIN);
         fsrValues[4] = analogRead(FSR5_PIN);
 
-        float mu = 2000.0;
-        float sigma = 500.0;
+        float mu = 1500.0;
+        float sigma = 700.0;
 
         float sumNormalized = 0.0;
         for (int i = 0; i < NUM_FSR; i++) {
@@ -163,13 +156,20 @@ void loop() {
             finalNormalized[i] = (sumNormalized > 0.0) ? normalizedValues[i] / sumNormalized : 0.0;
         }
 
-        float pitch, roll, yawRate;
-        calculateAngles(pitch, roll, yawRate);
+        float yawRate;
+        calculateYawRate(yawRate);
 
         unsigned long now = millis();
         float dt = (now - prevTime) / 1000.0;
         yawAngle += yawRate * dt;
         prevTime = now;
+
+        // 랩핑 처리 (각도를 -180 ~ 180 사이로 유지)
+        if (yawAngle > 180.0) yawAngle -= 360.0;
+        else if (yawAngle < -180.0) yawAngle += 360.0;
+        // 랩핑 처리 (각도를 -180 ~ 180 사이로 유지)
+        if (yawAngle > 180.0) yawAngle -= 360.0;
+        else if (yawAngle < -180.0) yawAngle += 360.0;
 
         String squatPosture = evaluateSquat(finalNormalized);
 
@@ -186,8 +186,6 @@ void loop() {
             postureArray.add(postureResults[i]);
         }
 
-        doc["pitch"] = pitch;
-        doc["roll"] = roll;
         doc["yaw_rate"] = yawRate;
         doc["yaw_angle"] = yawAngle;
         doc["squat_posture"] = squatPosture;
