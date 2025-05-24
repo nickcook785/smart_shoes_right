@@ -84,6 +84,16 @@ String evaluateSquat(float* norm) {
         return "UNCLEAR";
     }
 }
+class WriteCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) override {
+        std::string value = pCharacteristic->getValue();
+        if (value == "reset") {
+            yawAngle = 0.0;
+            Serial.println("🌀 yawAngle 수동 초기화됨 (reset 명령)");
+        }
+    }
+};
+
 
 void setup() {
     Serial.begin(115200);
@@ -97,7 +107,7 @@ void setup() {
     } else {
         Serial.println("✅ MPU6050 초기화 완료!");
     }
-    BLEDevice::init("ESP32-S3 BLE right shoe");
+    BLEDevice::init("ESP32-S3 BLE right shoes");
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
@@ -112,6 +122,8 @@ void setup() {
         WRITE_CHARACTERISTIC_UUID,
         BLECharacteristic::PROPERTY_WRITE
     );
+
+    pWriteCharacteristic->setCallbacks(new WriteCallbacks());
     pService->start();
 
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
@@ -164,9 +176,6 @@ void loop() {
         yawAngle += yawRate * dt;
         prevTime = now;
 
-        // 랩핑 처리 (각도를 -180 ~ 180 사이로 유지)
-        if (yawAngle > 180.0) yawAngle -= 360.0;
-        else if (yawAngle < -180.0) yawAngle += 360.0;
         // 랩핑 처리 (각도를 -180 ~ 180 사이로 유지)
         if (yawAngle > 180.0) yawAngle -= 360.0;
         else if (yawAngle < -180.0) yawAngle += 360.0;
