@@ -31,6 +31,7 @@ BLECharacteristic* pWriteCharacteristic = nullptr;
 
 float yawAngle = 0.0;
 unsigned long prevTime = 0;
+float gyroOffset = 0.0;          // 자이로 오프셋 저장용
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
@@ -45,45 +46,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
     }
 };
 
-float gaussianNormalize(int x, float mu, float sigma) {
-    return exp(-pow(x - mu, 2) / (2 * pow(sigma, 2)));
-}
-
-void setupFSRPins() {
-    pinMode(FSR1_PIN, INPUT);
-    pinMode(FSR2_PIN, INPUT);
-    pinMode(FSR3_PIN, INPUT);
-    pinMode(FSR4_PIN, INPUT);
-    pinMode(FSR5_PIN, INPUT);
-    Serial.println("✅ FSR 센서 핀 설정 완료!");
-}
-
-void calculateYawRate(float &yawRate) {
-    sensors_event_t a, g, temp;
-    if (mpu.getEvent(&a, &g, &temp)) {
-        yawRate = g.gyro.z * 180.0 / PI;  // rad/s → deg/s
-    } else {
-        Serial.println("⚠️ MPU6050 데이터 읽기 실패 (센서 미연결일 수 있음)");
-        yawRate = 0.0;
-    }
-}
-
-
-String evaluateSquat(float* norm) {
-    float front = (norm[0] + norm[1] + norm[2]) / 3.0;
-    float center = norm[3];
-    float rear = norm[4];
-
-    if (rear > 0.4 && front < 0.3 && center >= 0.2 && center <= 0.4) {
-        return "GOOD";
-    } else if (front >= 0.3) {
-        return "LEANING_FORWARD";
-    } else if (rear < 0.2) {
-        return "NO_HEEL_PRESSURE";
-    } else {
-        return "UNCLEAR";
-    }
-}
 class WriteCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) override {
         std::string value = pCharacteristic->getValue();
@@ -94,6 +56,75 @@ class WriteCallbacks : public BLECharacteristicCallbacks {
     }
 };
 
+void setupFSRPins() {
+    pinMode(FSR1_PIN, INPUT);
+    pinMode(FSR2_PIN, INPUT);
+    pinMode(FSR3_PIN, INPUT);
+    pinMode(FSR4_PIN, INPUT);
+    pinMode(FSR5_PIN, INPUT);
+    Serial.println("✅ FSR 센서 핀 설정 완료!");
+}
+
+float filteredYawRate = 0.0;
+float alpha = 0.9;  // 저역통과 필터 계수 (0.0 ~ 1.0)
+
+void calculateYawRate(float &yawRate) {
+    sensors_event_t a, g, temp;
+    if (mpu.getEvent(&a, &g, &temp)) {
+        // 오프셋을 뺀 raw 값 (deg/s)
+        float rawYawRate = (g.gyro.z - gyroOffset) * 180.0 / PI;
+        // 저역통과 필터
+        filteredYawRate = alpha * filteredYawRate + (1 - alpha) * rawYawRate;
+        yawRate = filteredYawRate;
+        // 죽은 구간(Deadzone) 적용: 작은 값은 0으로 처리
+        if (abs(yawRate) < 0.1) {
+            yawRate = 0.0;
+        }
+    } else {
+        Serial.println("⚠️ MPU6050 데이터 읽기 실패");
+        yawRate = 0.0;
+    }
+}
+
+void calibrateGyro() {
+    float sum = 0.0;
+    int samples = 500;  // 자이로 오프셋 보정을 위한 샘플 수
+    Serial.println("🌀 자이로 오프셋 보정 시작...");
+
+    for (int i = 0; i < samples; i++) {
+        sensors_event_t a, g, temp;
+        if (mpu.getEvent(&a, &g, &temp)) {
+            sum += g.gyro.z;  // z축 자이로 값 누적
+        } else {
+            Serial.println("⚠️ MPU6050 데이터 읽기 실패 (센서 미연결일 수 있음)");
+            return;
+        }
+        delay(2);  // 샘플링 간격 (약 2ms)
+    }
+    gyroOffset = sum / samples;  // 평균을 오프셋으로 저장
+    Serial.print("🎯 보정된 gyroOffset: ");
+    Serial.println(gyroOffset, 6);
+}
+
+float gaussianNormalize(int x, float mu, float sigma) {
+    return exp(-pow(x - mu, 2) / (2 * pow(sigma, 2)));
+}
+
+String evaluateSquat(float* norm) {
+    float front = (norm[2] + norm[3] + norm[4]) / 3.0;
+    float center = norm[1];
+    float rear = norm[0];
+
+    if (rear > 0.65 && front < 0.3 && center >= 0.2 && center <= 0.4) {
+        return "족압 분포가 고릅니다.";
+    } else if (front >= 0.3) {
+        return "앞쪽에 족압이 강합니다.";
+    } else if (rear > 0.65) {
+        return "뒤쪽 족압이 너무 강합니다.";
+    } else {
+        return "UNCLEAR";
+    }
+} 
 
 void setup() {
     Serial.begin(115200);
@@ -106,7 +137,9 @@ void setup() {
         Serial.println("❌ MPU6050 연결 실패 (연결 확인 필요)");
     } else {
         Serial.println("✅ MPU6050 초기화 완료!");
+        calibrateGyro();  // 초기 오프셋 보정
     }
+
     BLEDevice::init("ESP32-S3 BLE right shoes");
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
@@ -122,8 +155,8 @@ void setup() {
         WRITE_CHARACTERISTIC_UUID,
         BLECharacteristic::PROPERTY_WRITE
     );
-
     pWriteCharacteristic->setCallbacks(new WriteCallbacks());
+
     pService->start();
 
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
@@ -145,6 +178,7 @@ void loop() {
         float finalNormalized[NUM_FSR];
         const char* postureResults[NUM_FSR];
 
+        // 1) FSR 읽기 및 가우시안 정규화
         fsrValues[0] = analogRead(FSR1_PIN);
         fsrValues[1] = analogRead(FSR2_PIN);
         fsrValues[2] = analogRead(FSR3_PIN);
@@ -163,25 +197,24 @@ void loop() {
             else if (fsrValues[i] > 50) postureResults[i] = "WEAK";
             else postureResults[i] = "INACTIVE";
         }
-
         for (int i = 0; i < NUM_FSR; i++) {
-            finalNormalized[i] = (sumNormalized > 0.0) ? normalizedValues[i] / sumNormalized : 0.0;
+            finalNormalized[i] = (sumNormalized > 0.0) ? (normalizedValues[i] / sumNormalized) : 0.0;
         }
 
+        // 2) 자이로(Yaw) 속도 및 누적 각도 계산
         float yawRate;
         calculateYawRate(yawRate);
-
         unsigned long now = millis();
         float dt = (now - prevTime) / 1000.0;
         yawAngle += yawRate * dt;
         prevTime = now;
-
-        // 랩핑 처리 (각도를 -180 ~ 180 사이로 유지)
         if (yawAngle > 180.0) yawAngle -= 360.0;
         else if (yawAngle < -180.0) yawAngle += 360.0;
 
+        // 3) 스쿼트 평가
         String squatPosture = evaluateSquat(finalNormalized);
 
+        // 4) JSON 생성 및 BLE 전송
         StaticJsonDocument<700> doc;
         JsonArray fsrArray = doc.createNestedArray("fsr_right");
         JsonArray finalArray = doc.createNestedArray("final_normalized_right");
@@ -193,8 +226,8 @@ void loop() {
             postureArray.add(postureResults[i]);
         }
 
-        doc["yaw_rate"] = yawRate;
-        doc["yaw_angle"] = yawAngle;
+        doc["yaw_rate"]    = yawRate;
+        doc["yaw_angle"]   = yawAngle;
         doc["squat_posture"] = squatPosture;
 
         String jsonString;
@@ -204,8 +237,8 @@ void loop() {
         pCharacteristic->setValue(jsonString.c_str());
         pCharacteristic->notify();
 
-        delay(1000);
+        delay(50);
     } else {
-        delay(500);
+        delay(50);
     }
 }
