@@ -77,7 +77,7 @@ void calculateYawRate(float &yawRate) {
         filteredYawRate = alpha * filteredYawRate + (1 - alpha) * rawYawRate;
         yawRate = filteredYawRate;
         // 죽은 구간(Deadzone) 적용: 작은 값은 0으로 처리
-        if (abs(yawRate) < 0.1) {
+        if (abs(yawRate) < 1.975) {
             yawRate = 0.0;
         }
     } else {
